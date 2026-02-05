@@ -6,4 +6,6 @@ requests
 beautifulsoup4
 lxml
 plotly
+streamlit
 altair
+scipy
