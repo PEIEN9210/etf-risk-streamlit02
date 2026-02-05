@@ -7,16 +7,26 @@ Original file is located at
     https://colab.research.google.com/drive/1Y1jRJvzhlUjdd66vnUOBj57YzwXHYc1s
 """
 
-# app.py
-# -*- coding: utf-8 -*-
-
 diff --git a/01app.py b/01app.py
 index 182114f5cdd1f4db1b979a53f601f0c86578a9af..17b6c0c3f9ae0b0e11f8716b0a0a301e589c6862 100644
 --- a/01app.py
 +++ b/01app.py
 @@ -29,120 +29,211 @@ TRADING_DAYS = 252
  RISK_FREE_RATE = 0.01  # 無風險利率
- 
+
+# app.py
+# -*- coding: utf-8 -*-
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime, timedelta
+from scipy.stats import spearmanr
+import plotly.graph_objects as go
+import altair as alt
+
+
  # ===============================
  # ETF Universe & 市場基準
  # ===============================
