@@ -2,10 +2,9 @@ streamlit
 pandas
 numpy
 yfinance
-requests
-beautifulsoup4
-lxml
-plotly
-streamlit
-altair
 scipy
+plotly
+altair
+requests
+python-dateutil
+
