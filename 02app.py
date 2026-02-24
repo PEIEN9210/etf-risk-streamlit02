@@ -718,17 +718,23 @@ class DataFetcher:
                 
                 if not df.empty and len(df) >= MIN_TRADING_DAYS:
                     data[code] = df
+                    logger.info(f"{code}: 成功載入 {len(df)} 筆資料")
                 else:
                     data[code] = None
+                    logger.warning(f"{code}: 資料不足 (僅{len(df) if not df.empty else 0}筆)")
                     
             except Exception as e:
-                logger.error(f"{code} 失敗: {e}")
+                logger.error(f"{code} 載入失敗: {str(e)}")
                 data[code] = None
             
             progress_bar.progress((i + 1) / len(tickers))
         
         progress_bar.empty()
         status_text.empty()
+        
+        # Debug資訊
+        success_count = sum(1 for v in data.values() if v is not None)
+        logger.info(f"成功載入: {success_count}/{len(tickers)}")
         
         return data
     
@@ -954,24 +960,43 @@ with st.spinner("載入資料..."):
     price_data = fetcher.fetch_price_data(ETF_LIST, MARKET_BENCHMARK)
     market_df = price_data.get(MARKET_BENCHMARK)
 
-if market_df is None:
-    st.error("❌ 無法載入市場基準")
+if market_df is None or market_df.empty:
+    st.error("❌ 無法載入市場基準資料")
+    st.info("請檢查網路連線或稍後再試")
+    st.stop()
+
+if len(market_df) < MIN_TRADING_DAYS:
+    st.error(f"❌ 市場基準資料不足：{len(market_df)} < {MIN_TRADING_DAYS}天")
     st.stop()
 
 # 計算所有ETF
 results = []
 sharpe_pvalues = []
+data_quality_issues = []
 
 for etf_code, etf_info in ETF_LIST.items():
     etf_df = price_data.get(etf_code)
     
-    if etf_df is None or len(etf_df) < MIN_TRADING_DAYS:
+    # 資料品質檢查
+    if etf_df is None:
+        data_quality_issues.append(f"{etf_code}: 無法載入資料")
+        continue
+    
+    if etf_df.empty:
+        data_quality_issues.append(f"{etf_code}: 資料為空")
+        continue
+        
+    if len(etf_df) < MIN_TRADING_DAYS:
+        data_quality_issues.append(f"{etf_code}: 資料不足 ({len(etf_df)} < {MIN_TRADING_DAYS}天)")
         continue
     
     try:
         metrics = analyzer.calculate_metrics(etf_df, market_df)
         div_info = fetcher.fetch_dividend_info(etf_code)
-        latest_price = fetcher.fetch_latest_price(etf_code) or float(etf_df["Close"].iloc[-1])
+        
+        latest_price = fetcher.fetch_latest_price(etf_code)
+        if latest_price is None or latest_price <= 0:
+            latest_price = float(etf_df["Close"].iloc[-1])
         
         utility_score = analyzer.calculate_utility_crra_correct(
             metrics, risk_profile, div_info.ttm_yield
@@ -1007,12 +1032,27 @@ for etf_code, etf_info in ETF_LIST.items():
         
     except Exception as e:
         logger.error(f"{etf_code} 失敗: {e}")
+        data_quality_issues.append(f"{etf_code}: 計算失敗 - {str(e)}")
         continue
+
+# 顯示資料品質警告
+if data_quality_issues:
+    with st.expander("⚠️ 資料品質警告", expanded=False):
+        for issue in data_quality_issues:
+            st.warning(issue)
 
 df_results = pd.DataFrame(results)
 
 if df_results.empty:
-    st.error("❌ 無資料")
+    st.error("❌ 無可用ETF資料")
+    if data_quality_issues:
+        st.error("所有ETF都無法載入，請檢查：")
+        for issue in data_quality_issues:
+            st.write(f"- {issue}")
+    st.info("建議：")
+    st.write("1. 檢查網路連線")
+    st.write("2. 稍後再試")
+    st.write("3. 點擊側邊欄「重新計算」按鈕清除快取")
     st.stop()
 
 # 多重檢驗校正
