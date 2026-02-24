@@ -51,7 +51,6 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from datetime import datetime, timedelta
 from scipy import stats, optimize
 import plotly.graph_objects as go
@@ -61,6 +60,14 @@ import warnings
 from typing import Dict, Tuple, Optional, List, Any
 from dataclasses import dataclass, field
 import logging
+
+# 嘗試導入yfinance，如果失敗則標記
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    YFINANCE_AVAILABLE = False
+    st.warning("⚠️ yfinance未安裝，將使用測試資料模式")
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -637,6 +644,13 @@ st.sidebar.header("📈 Top N ETF")
 TOP_N = st.sidebar.slider("顯示數量", 1, len(ETF_LIST), 5)
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("🔧 資料來源")
+use_test_data_option = st.sidebar.checkbox(
+    "使用測試資料模式", 
+    value=not YFINANCE_AVAILABLE,
+    help="當Yahoo Finance無法連線時，可使用模擬資料進行測試"
+)
+
 if st.sidebar.button("🔄 重新計算"):
     st.cache_data.clear()
     st.sidebar.success("✅ 快取已清除")
@@ -697,50 +711,119 @@ class StatisticalTools:
         return pvalue
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 資料抓取
+# 資料抓取（含測試資料降級機制）
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class DataFetcher:
     @staticmethod
+    def generate_test_data(etf_code: str, days: int = 252) -> pd.DataFrame:
+        """
+        生成測試資料（當Yahoo Finance無法連線時使用）
+        """
+        params = {
+            "0050.TW": {"base_price": 150, "volatility": 0.015, "drift": 0.0003},
+            "0056.TW": {"base_price": 35, "volatility": 0.012, "drift": 0.0002},
+            "006208.TW": {"base_price": 90, "volatility": 0.014, "drift": 0.0003},
+            "00692.TW": {"base_price": 32, "volatility": 0.016, "drift": 0.0004},
+            "00757.TW": {"base_price": 28, "volatility": 0.025, "drift": 0.0005},
+            "00878.TW": {"base_price": 22, "volatility": 0.011, "drift": 0.0002},
+            "00919.TW": {"base_price": 18, "volatility": 0.013, "drift": 0.0002},
+        }
+        
+        param = params.get(etf_code, {"base_price": 50, "volatility": 0.015, "drift": 0.0003})
+        
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=int(days * 1.4))
+        dates = pd.date_range(start=start_date, end=end_date, freq='B')[:days]
+        
+        np.random.seed(hash(etf_code) % 2**32)
+        returns = np.random.normal(param["drift"], param["volatility"], days)
+        price = param["base_price"] * np.exp(np.cumsum(returns))
+        
+        df = pd.DataFrame(index=dates)
+        df['Close'] = price
+        df['Open'] = price * (1 + np.random.normal(0, 0.002, days))
+        df['High'] = np.maximum(df['Open'], df['Close']) * (1 + np.abs(np.random.normal(0, 0.003, days)))
+        df['Low'] = np.minimum(df['Open'], df['Close']) * (1 - np.abs(np.random.normal(0, 0.003, days)))
+        df['Volume'] = np.random.lognormal(15, 0.5, days).astype(int) * 1000
+        
+        return df
+    
+    @staticmethod
     @st.cache_data(ttl=3600)
-    def fetch_price_data(etf_list: Dict, benchmark: str, period: str = "1y") -> Dict:
+    def fetch_price_data(etf_list: Dict, benchmark: str, period: str = "1y", use_test_data: bool = False) -> Dict:
+        """
+        批次抓取（含測試資料降級）
+        """
         data = {}
         tickers = list(set(list(etf_list.keys()) + [benchmark]))
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        for i, code in enumerate(tickers):
-            try:
-                status_text.text(f"載入 {code}...")
-                ticker = yf.Ticker(code)
-                df = ticker.history(period=period)
-                
-                if not df.empty and len(df) >= MIN_TRADING_DAYS:
-                    data[code] = df
-                    logger.info(f"{code}: 成功載入 {len(df)} 筆資料")
-                else:
-                    data[code] = None
-                    logger.warning(f"{code}: 資料不足 (僅{len(df) if not df.empty else 0}筆)")
-                    
-            except Exception as e:
-                logger.error(f"{code} 載入失敗: {str(e)}")
-                data[code] = None
+        # 檢查是否強制使用測試資料或yfinance不可用
+        if use_test_data or not YFINANCE_AVAILABLE:
+            if not YFINANCE_AVAILABLE:
+                st.info("📊 yfinance未安裝，使用測試資料模式")
             
-            progress_bar.progress((i + 1) / len(tickers))
+            for i, code in enumerate(tickers):
+                status_text.text(f"生成測試資料 {code}...")
+                data[code] = DataFetcher.generate_test_data(code)
+                logger.info(f"{code}: 生成測試資料 {len(data[code])} 筆")
+                progress_bar.progress((i + 1) / len(tickers))
+        
+        else:
+            # 嘗試真實資料
+            yahoo_failed = False
+            
+            for i, code in enumerate(tickers):
+                try:
+                    status_text.text(f"載入 {code}...")
+                    ticker = yf.Ticker(code)
+                    df = ticker.history(period=period)
+                    
+                    if not df.empty and len(df) >= MIN_TRADING_DAYS:
+                        data[code] = df
+                        logger.info(f"{code}: 成功載入 {len(df)} 筆資料")
+                    else:
+                        data[code] = None
+                        logger.warning(f"{code}: 資料不足")
+                        
+                except Exception as e:
+                    logger.error(f"{code} Yahoo Finance失敗: {str(e)}")
+                    data[code] = None
+                    
+                    # 如果是第一個就失敗，切換到測試資料
+                    if i == 0:
+                        yahoo_failed = True
+                        st.warning("⚠️ 無法連線Yahoo Finance，切換至測試資料模式")
+                        break
+                
+                progress_bar.progress((i + 1) / len(tickers))
+            
+            # 如果Yahoo失敗，重新用測試資料
+            if yahoo_failed:
+                data = {}
+                for i, code in enumerate(tickers):
+                    status_text.text(f"生成測試資料 {code}...")
+                    data[code] = DataFetcher.generate_test_data(code)
+                    progress_bar.progress((i + 1) / len(tickers))
         
         progress_bar.empty()
         status_text.empty()
         
-        # Debug資訊
-        success_count = sum(1 for v in data.values() if v is not None)
-        logger.info(f"成功載入: {success_count}/{len(tickers)}")
+        success_count = sum(1 for v in data.values() if v is not None and not v.empty)
+        logger.info(f"資料載入完成: {success_count}/{len(tickers)}")
         
         return data
     
     @staticmethod
     @st.cache_data(ttl=900)
     def fetch_latest_price(code: str) -> Optional[float]:
+        """最新價格"""
+        if not YFINANCE_AVAILABLE:
+            return None
+            
         try:
             ticker = yf.Ticker(code)
             hist = ticker.history(period="5d")
@@ -957,7 +1040,7 @@ with st.spinner("載入資料..."):
     fetcher = DataFetcher()
     analyzer = FinancialAnalyzer()
     
-    price_data = fetcher.fetch_price_data(ETF_LIST, MARKET_BENCHMARK)
+    price_data = fetcher.fetch_price_data(ETF_LIST, MARKET_BENCHMARK, use_test_data=use_test_data_option)
     market_df = price_data.get(MARKET_BENCHMARK)
 
 if market_df is None or market_df.empty:
